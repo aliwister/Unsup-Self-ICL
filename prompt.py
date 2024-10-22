@@ -28,12 +28,16 @@ class Prompt(metaclass=abc.ABCMeta):
         task_desc: str,
         inputs: Union[str, List[str]],
         num_demos: int,
-        shots: List[Shot] = []
+        shots: List[Shot] = [],
+        shots_raw: List[str] = [],
+        is_up = False
     ) -> None:
         self._task_desc = task_desc
         self._inputs = inputs
         self._num_demos = num_demos
         self._shots = shots
+        self._shots_raw = shots_raw
+        self._is_up = is_up
     
     @abc.abstractmethod  
     def gen_prediction(self, cot: bool = False) -> str:
@@ -50,9 +54,11 @@ class StreamPrompt(Prompt):
         task_desc: str,
         inputs: str,
         num_demos: int,
-        shots: List[Shot] = []
+        shots: List[Shot] = [],
+        shots_raw: List[str] = [],
+        is_up = False
     ) -> None:
-        super().__init__(task_desc, inputs, num_demos, shots)
+        super().__init__(task_desc, inputs, num_demos, shots, shots_raw, is_up)
 
     def gen_prediction(self, cot: bool = False, add_parenthesis: bool = False) -> str:
         """
@@ -70,13 +76,19 @@ class StreamPrompt(Prompt):
         Q:
         """
         # task description
-        prompt = [f"Task description: {self._task_desc}\n\n"]
+        prompt = [f"Task description: {self._task_desc[0]}\n\n"]
         if cot:
             prompt.append("Format:\n")
             prompt.append('Starting with "Therefore, the correct answer is ..." before giving your final answer.\n')
             prompt.append("If options are availbale, you must pick one as the final answer.\n")
             prompt.append("It's very important that you stick to the format.\n\n")
         # in-context examples
+        if (self._is_up):
+            prompt.append(f"{self._task_desc[1]}:\n")
+            for shot in self._shots_raw:
+                prompt.append(f"Q: {shot}\n")
+            prompt.append('\n###\n')
+            prompt.append(f"{self._task_desc[2]}:\n\n")
         for shot in self._shots:
             prompt.append(f"Q: {shot.input}\n")
             prompt.append(f"A:{self.cot_prompt if cot else ''} {shot.label}\n\n")
@@ -96,9 +108,9 @@ class StreamPrompt(Prompt):
         """
         if type(diversity) == bool:
             diverse_prompt = ", diverse, and creative" if diversity else ""
-            return f"Following is an example instance for the task: {self._task_desc} Please come up with {self._num_demos} new{diverse_prompt} instances for the task.\n\nExample instance:\nQ: {self._inputs}\n\nNew instance 1:\nQ:"
+            return f"Following is an example instance for the task: {self._task_desc[0]} Please come up with {self._num_demos} new{diverse_prompt} instances for the task.\n\nExample instance:\nQ: {self._inputs.split('Options')[0]}\n\nNew instance 1:\nQ:"
         elif (type(diversity) == str) and (diversity == "no-new"):
-            return f"Following is an example instance for the task: {self._task_desc} Please come up with {self._num_demos} instances for the task.\nExample instance:\nQ: {self._inputs}\n\nInstance 1:\nQ:"
+            return f"Following is an example instance for the task: {self._task_desc[0]} Please come up with {self._num_demos} instances for the task.\nExample instance:\nQ: {self._inputs.split('Options')[0]}\n\nInstance 1:\nQ:"
 
 
 class BatchPrompt(Prompt):

@@ -1,6 +1,7 @@
 import os
 import math
 import json
+import openai
 import yaml
 import pandas as pd
 import random
@@ -13,6 +14,7 @@ from task import TaskGenerator
 from model import Model
 from prompt import StreamPrompt, BatchPrompt, Shot
 from promptparser import PromptParser
+import time
 
 @dataclass
 class Config(object):
@@ -63,7 +65,7 @@ class Experiment(object):
         else:
             raise ValueError(f"Invalid inference_mode: {self._config.inference_mode}")
         # ensure correct exemplars_mode
-        if self._config.exemplars_mode not in ["self-icl", "standard"]:
+        if self._config.exemplars_mode not in ["self-icl", "standard", "up-icl"]:
             raise ValueError(f"Invalid exemplars_mode: {self._config.exemplars_mode}")
         # make logging path
         self._log_path = Path(self._config.log_path) / self._config.inference_mode / self._config.exp_name
@@ -114,6 +116,7 @@ class Experiment(object):
         continue_flag = True if task_continue_from else False
         failed_cases = [] # list of (task_name, sample_idx)
         for task_name in task_generator.task2desc.keys():
+            start=time.time()
             # skip tasks before continue_from
             if continue_flag and (task_name != task_continue_from):
                 continue
@@ -122,7 +125,7 @@ class Experiment(object):
             # make task log dir
             task_log_path = self._log_path / task_name
             task_log_path.mkdir(parents=True, exist_ok=True)
-            if self._config.exemplars_mode == "self-icl":
+            if self._config.exemplars_mode == "self-icl" or self._config.exemplars_mode == "up-icl":
                 # make pseudo-demos log dir
                 for subdir in self.self_icl_subdirs:
                     (task_log_path / subdir).mkdir(parents=True, exist_ok=True)
@@ -186,10 +189,14 @@ class Experiment(object):
                         shots=shots
                     )
                 # augment prompt with pseudo-demos if "self-icl"
-                if self._config.exemplars_mode == "self-icl":
+            
+                if self._config.exemplars_mode == "self-icl" or self._config.exemplars_mode == "up-icl":
                     # 1. Pseudo-demo inputs
                     if existing_demos_path is None: # generate pseudo-demo inputs
                         demo_prompt = prompt.gen_demo_inputs(diversity=self._config.diverse_exemplars)
+                        #messages = [
+                        #    {"role": "user", "content": demo_prompt}
+                        #]
                         try:
                             demo_prompt, demo_inputs = self._model.complete(demo_prompt, label_set=None, temperature=self._config.demo_temperature)
                         except ValueError:
@@ -212,31 +219,38 @@ class Experiment(object):
                     if (existing_demos_path is None) or rerun_pseudo_label:
                         if (self._config.inference_mode == "stream") or step2_stream:
                             shots = []
+                            shots_raw = sep_demo_inputs
                             failed_flag = False
-                            for j, sep_demo_input in enumerate(sep_demo_inputs):
-                                sep_demo_prompt = StreamPrompt(
-                                    task_desc=task.task_desc,
-                                    inputs=sep_demo_input,
-                                    num_demos=0, # NOTE
-                                    shots=[]
-                                ).gen_prediction(cot=self._config.use_cot)
-                                print(f"Predicting demo #{j} (cot: {self.cot_check if self._config.use_cot else self.cot_cross}) -> ", end='')
-                                try:
-                                    sep_demo_prompt, sep_demo_label = self._model.complete(sep_demo_prompt, label_set, temperature=self._config.temperature)
-                                except ValueError:
-                                    print(Fore.RED + f"Task {task_name} sample #{i} failed: failed to generate pseudo-demo labels" + Style.RESET_ALL)
-                                    failed_flag = True
-                                    break
-                                if sep_demo_prompt[-1] == '(':
-                                    sep_demo_label = '(' + sep_demo_label
-                                shot = Shot(_input=sep_demo_input, _label=sep_demo_label.strip())
-                                shots.append(shot)
-                                # logging
-                                print(sep_demo_label)
-                                (task_log_path / "demo-labels" / f"{i}-{j}.txt").write_text(str(shot))
-                            if failed_flag:
-                                failed_cases.append([task_name, i])
-                                continue
+                            if(self._config.exemplars_mode == "self-icl"):
+                                for j, sep_demo_input in enumerate(sep_demo_inputs):
+                                    sep_demo_prompt = StreamPrompt(
+                                        task_desc=task.task_desc,
+                                        inputs=sep_demo_input,
+                                        num_demos=0, # NOTE
+                                        shots=[]
+                                    ).gen_prediction(cot=self._config.use_cot)
+                                    print(f"Predicting demo #{j} (cot: {self.cot_check if self._config.use_cot else self.cot_cross}) -> ", end='')
+                                    try:
+                                        messages = [
+                                            {"role": "user", "content": sep_demo_prompt}
+                                        ]
+                                        sep_demo_prompt, sep_demo_label = self._model.complete(sep_demo_prompt, label_set, temperature=self._config.temperature)
+                                    except ValueError:
+                                        print(Fore.RED + f"Task {task_name} sample #{i} failed: failed to generate pseudo-demo labels" + Style.RESET_ALL)
+                                        failed_flag = True
+                                        break
+                                    if sep_demo_prompt[-1] == '(':
+                                        sep_demo_label = '(' + sep_demo_label
+                                    shot = Shot(_input=sep_demo_input, _label=sep_demo_label)
+                                    shots.append(shot)
+                                    # logging
+                                    print(sep_demo_label)
+                                    (task_log_path / "demo-labels" / f"{i}-{j}.txt").write_text(str(shot))
+                                if failed_flag:
+                                    failed_cases.append([task_name, i])
+                                    continue
+
+
                         else:
                             print(f"Predicting demo-labels in sample #{i}...")
                             sep_demo_prompt = BatchPrompt(
@@ -312,7 +326,10 @@ class Experiment(object):
                                         shots=shots
                                     )
                                     pred_prompt = prompt.gen_prediction(cot=self._config.use_cot, add_parenthesis=add_parenthesis)
-                                    pred_prompt, res_text = self._model.complete(pred_prompt, label_set, temperature=self._config.temperature)
+                                    messages = [
+                                        {"role": "user", "content": demo_prompt}
+                                    ]
+                                    pred_prompt, res_text = self._model.complete(messages, label_set, temperature=self._config.temperature)
                                     print(res_text)
                                     full_text = pred_prompt + res_text
                                     (task_log_path / "full-outputs" / f"{i * self._config.batch_size + j}.txt").write_text(full_text)
@@ -328,20 +345,28 @@ class Experiment(object):
                             task_desc=task.task_desc,
                             inputs=task_inputs,
                             num_demos=self._config.num_demos,
-                            shots=shots
+                            shots=shots,
+                            shots_raw = shots_raw,
+                            is_up = self._config.exemplars_mode == "up-icl"
                         )
                     else: # batch
                         prompt = BatchPrompt(
                             task_desc=task.task_desc, # shots already contain task description in current implementation
                             inputs=task_inputs,
                             num_demos=self._config.num_demos,
-                            shots=shots
+                            shots=shots,
+                            shots_raw = shots_raw,
+                            is_up = self._config.exemplars_mode == "up-icl"
                         )
                     
                 # run inference
                 print(f"Predicting sample #{i} (cot: {self.cot_check if self._config.use_cot else self.cot_cross}) ->", end='')
                 pred_prompt = prompt.gen_prediction(cot=self._config.use_cot, add_parenthesis=add_parenthesis)
+                #pdb.set_trace()
                 try:
+                    messages = [
+                        {"role": "user", "content": pred_prompt}
+                    ]
                     pred_prompt, res_text = self._model.complete(pred_prompt, label_set, temperature=self._config.temperature)
                 except ValueError:
                     print(Fore.RED + f"Task {task_name} sample #{i} failed: failed to generate prediction" + Style.RESET_ALL)
@@ -354,7 +379,11 @@ class Experiment(object):
                     (task_log_path / f"{i}.txt").write_text(full_text)
                 else: # self-icl
                     (task_log_path / "full-outputs" / f"{i}.txt").write_text(full_text)
-        
+            timediff=time.time()-start
+            file_path = 'EXPERIMENTS_SUMMARY.txt'
+            with open(file_path, 'a') as file:
+                file.write(f"{task_name}, {self._config.exemplars_mode}, {timediff}\n")
+       
         # save failed cases
         if len(failed_cases) > 0:
             print(f"Saving {len(failed_cases)} failed cases...")
@@ -396,6 +425,7 @@ class Experiment(object):
             
             ncorrect = 0
             npredict = 0
+            nskip = 0
             per_instance[task_name] = list()
             if type(self._config.test_sample_size) == int:
                 num_runs = self._config.test_sample_size
@@ -409,13 +439,26 @@ class Experiment(object):
                         continue
                     filename = f"{i // (1 if step3_stream else self._config.batch_size)}.txt"
                     if self._config.exemplars_mode == "standard":
-                        full_res = (task_log_path / filename).read_text()
+                        try:
+                            full_res = (task_log_path / filename).read_text()
+                        except FileNotFoundError:
+                            nskip = nskip+1
+                            continue
+
                     else: # self-icl
-                        full_res = (task_log_path / "full-outputs" / filename).read_text()
+                        try:
+                            full_res = (task_log_path / "full-outputs" / filename).read_text()
+                        except FileNotFoundError:
+                            nskip = nskip+1
+                            continue
                     # parse inference result
                     label = task.get_new_labels().strip("()").upper()
                     if (self._config.inference_mode == "stream") or step3_stream:
-                        pred = self._prompt_parser.extract_pred(full_res, use_cot=self._config.use_cot).strip("()").upper()
+                        try:
+                            pred = self._prompt_parser.extract_pred(full_res, use_cot=self._config.use_cot).strip("()").upper()
+                        except ValueError:
+                            nskip = nskip+1
+                            continue
                     else: # batch
                         pred = self._prompt_parser.extract_pred_batch(full_res, answer_index=(i % self._config.batch_size) + 1 + self._config.num_demos).strip("()").upper()
                     # print(f"Sample #{i}: label = {label}, pred = {pred} -> ", end='')
@@ -432,9 +475,10 @@ class Experiment(object):
             eval_results[task_name] = {
                 "ncorrect": ncorrect,
                 "total": npredict,
-                "accuracy": ncorrect / npredict
+                #"accuracy": ncorrect / npredict,
+                "skip": nskip
             }
-            print(f"Correct count: {Fore.BLUE}{ncorrect}/{npredict}{Style.RESET_ALL}")
+            print(f"{Fore.BLUE}{ncorrect}/{npredict} . Skipped={nskip} {Style.RESET_ALL}")
             total_correct += ncorrect
             total_predict += npredict
         
@@ -533,7 +577,7 @@ class Experiment(object):
                 num_tokens[task_name]["step1"].append(step1_tokens)
                 num_tokens[task_name]["step2"].append(step2_tokens)
                 # step 3
-                if self._config.exemplars_mode == "self-icl":
+                if self._config.exemplars_mode == "self-icl" or  self._config.exemplars_mode == "up-icl":
                     text = (task_log_path / "full-outputs" / f"{i}.txt").read_text()
                 else:
                     text = (task_log_path / f"{i}.txt").read_text()
@@ -555,11 +599,11 @@ class Experiment(object):
 
 def parse_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--config_path", type=Path, required=True)
+    parser.add_argument("--config_path", type=Path, default=Path('./configs/config_template_self-icl.palm.yml'))
     parser.add_argument("--lacked_cases_path", type=Path, default=None)
     parser.add_argument("--task_continue_from", type=str, default=None)
     parser.add_argument("--sample_start_from", type=int, default=0)
-    parser.add_argument("--label_type", type=str, default=None)
+    parser.add_argument("--label_type", type=str, default="class")
     parser.add_argument("--eval", action="store_true")
     parser.add_argument("--estimate_cost", action="store_true")
     parser.add_argument("--weighted_acc", action="store_true")

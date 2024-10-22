@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 from argparse import ArgumentParser, Namespace
+import pdb
+
 
 class PromptParser(object):
     
@@ -12,13 +14,13 @@ class PromptParser(object):
             sep_demo_inputs = re.findall(pattern=r"New instance \d:\s+Q:\s*(.*?)(?:(?=\n*New instance)|\Z)", string=full_demo_inputs, flags=re.DOTALL)
         elif "Instance" in full_demo_inputs:
             sep_demo_inputs = re.findall(pattern=r"Instance \d:\s+Q:\s*(.*?)(?:(?=\n*Instance)|\Z)", string=full_demo_inputs, flags=re.DOTALL)
-        if len(sep_demo_inputs) != self._num_demos:
-            raise ValueError(f"Number of demos in full_demo_inputs ({len(sep_demo_inputs)}) does not match num_demos ({self._num_demos})")
+        #if len(sep_demo_inputs) != self._num_demos:
+        #    raise ValueError(f"Number of demos in full_demo_inputs ({len(sep_demo_inputs)}) does not match num_demos ({self._num_demos})")
         return sep_demo_inputs
     
     def parse_pred(self, pred: str) -> str:
         return re.split(pattern=r"[,.;: ]", string=pred)[0]
-    
+
     def extract_pred(self, full_res: str, use_cot: bool = False, use_parse_pred: bool = True):
         if use_cot:
             pred = re.findall(pattern=r".*(?:[Tt]herefore, the correct answer is:*|the correct answer is therefore|so the correct answer is)(.*)", string=full_res, flags=re.DOTALL)
@@ -28,7 +30,7 @@ class PromptParser(object):
                 pred = pred[0].strip()
             return self.parse_pred(pred) if use_parse_pred else pred
         else:
-            pred = re.findall(pattern=r"A:\W*(\w+).*?\Z", string=full_res)
+            pred = re.findall(pattern=r"A:\W*(\w+).*?\Z", string=full_res.strip())
             if len(pred) != 1:
                 raise ValueError(f"Number of predictions in full_res ({len(pred)}) is not 1")
             return pred[0]
